@@ -1,0 +1,11 @@
+# ExecStart points at this checkout. Change the path if you clone the repo somewhere else.
+[Unit]
+Description=Push CPU, GPU, and system readings to the OLED Nano
+
+[Service]
+ExecStart=%h/.local/bin/uv run "%h/Documents/Github Local/OLED-System-Monitor/host/oled-monitor.py"
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

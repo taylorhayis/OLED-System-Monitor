@@ -1,13 +1,14 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
 
-// Dummy readings. Replace these when the real sensors are wired in.
-int gpuTemp = 72;
-int cpuTemp = 58;
-int sysTemp = 41;
+// Filled by the host over serial: "gpuC,cpuC,sysC,gpuFan,cpuFan,sysFan".
+// Fan numbers are percents and may read past 100 when a fan beats its max.
+int gpuTemp = 0;
+int cpuTemp = 0;
+int sysTemp = 0;
 
-int gpuFan = 96;
-int cpuFan = 47;
+int gpuFan = 0;
+int cpuFan = 0;
 int sysFan = 0;
 
 // Portrait: 64 wide, 128 tall. RES is Nano D8.
@@ -40,6 +41,8 @@ static void tickFans() {
     if (percent <= 0) {
       continue;
     }
+    // The digits can show 101 and up. The blades still top out at full
+    // speed, or a bigger jump looks like the fan is turning backwards.
     if (percent > 100) {
       percent = 100;
     }
@@ -136,14 +139,88 @@ static void drawFans() {
     display.drawStr(16, top + 6, kNames[i]);
 
     display.setFont(u8g2_font_profont12_tr);
-    char buf[6];
+    char buf[8];
     snprintf(buf, sizeof(buf), "%d%%", values[i]);
     int w = display.getStrWidth(buf);
     display.drawStr(64 - w, top + 11, buf);
   }
 }
 
+static const uint32_t kStaleMs = 5000;
+static char line[32];
+static uint8_t lineLen;
+static uint32_t lastFrameMs;
+static bool haveFrame;
+static bool panelLit;
+
+static bool parseFrame(const char *s) {
+  int values[6];
+  for (uint8_t i = 0; i < 6; i++) {
+    if (*s == '\0') {
+      return false;
+    }
+    bool neg = false;
+    if (*s == '-') {
+      neg = true;
+      s++;
+    }
+    if (*s < '0' || *s > '9') {
+      return false;
+    }
+    int value = 0;
+    while (*s >= '0' && *s <= '9') {
+      value = value * 10 + (*s - '0');
+      if (value > 999) {
+        return false;
+      }
+      s++;
+    }
+    values[i] = neg ? -value : value;
+    if (i < 5) {
+      if (*s != ',') {
+        return false;
+      }
+      s++;
+    }
+  }
+  if (*s != '\0') {
+    return false;
+  }
+  gpuTemp = values[0];
+  cpuTemp = values[1];
+  sysTemp = values[2];
+  gpuFan = values[3];
+  cpuFan = values[4];
+  sysFan = values[5];
+  lastFrameMs = millis();
+  haveFrame = true;
+  return true;
+}
+
+static void pollSerial() {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\r') {
+      continue;
+    }
+    if (c != '\n') {
+      if (lineLen < sizeof(line) - 1) {
+        line[lineLen++] = c;
+      } else {
+        lineLen = 0;
+      }
+      continue;
+    }
+    line[lineLen] = '\0';
+    if (lineLen > 0) {
+      parseFrame(line);
+    }
+    lineLen = 0;
+  }
+}
+
 void setup() {
+  Serial.begin(115200);
   display.setBusClock(400000);
   display.setI2CAddress(0x3C * 2);
   display.begin();
@@ -151,6 +228,17 @@ void setup() {
 }
 
 void loop() {
+  pollSerial();
+  bool live = haveFrame && (millis() - lastFrameMs) < kStaleMs;
+  if (!live) {
+    if (panelLit) {
+      panelLit = false;
+      display.clearBuffer();
+      display.sendBuffer();
+    }
+    return;
+  }
+  panelLit = true;
   tickFans();
   display.clearBuffer();
   drawCorners(0, 0, 64, 128);
