@@ -2,13 +2,14 @@
 # requires-python = ">=3.12"
 # dependencies = ["pyserial"]
 # ///
-"""Push live temps and fan percents to the OLED Nano.
+"""Push live temps, fan percents, and load to the OLED Nano.
 
-One line a second, at 115200: gpuC,cpuC,sysC,gpuFan,cpuFan,sysFan
+One line a second, at 115200:
+gpuC,cpuC,sysC,gpuFan,cpuFan,sysFan,gpuUse,cpuUse
 
 2500 RPM is 100% for the CPU fan and the system fan. The GPU uses the
 max the card publishes. A fan spinning faster than that reads 101, 102,
-and so on, which is the cue to raise the cap.
+and so on, which is the cue to raise the cap. Load stays in 0..100.
 """
 
 import time
@@ -22,6 +23,8 @@ INTERVAL_S = 1.0
 
 CPU_FAN_MAX = 2500
 SYS_FAN_MAX = 2500
+
+_cpu_prev = None
 
 
 def find_hwmon(prefix):
@@ -54,6 +57,29 @@ def fan_percent(rpm, maximum):
     return percent
 
 
+def cpu_util():
+    global _cpu_prev
+    parts = Path("/proc/stat").read_text().splitlines()[0].split()
+    fields = [int(part) for part in parts[1:9]]
+    idle = fields[3] + fields[4]
+    total = sum(fields)
+    prev = _cpu_prev
+    _cpu_prev = (idle, total)
+    if prev is None:
+        return 0
+    idle_d = idle - prev[0]
+    total_d = total - prev[1]
+    if total_d <= 0:
+        return 0
+    used = (total_d - idle_d) * 100 + total_d // 2
+    percent = used // total_d
+    if percent < 0:
+        return 0
+    if percent > 100:
+        return 100
+    return percent
+
+
 def sample():
     gpu = find_hwmon("amdgpu")
     cpu = find_hwmon("k10temp")
@@ -67,6 +93,11 @@ def sample():
         raise FileNotFoundError("missing hwmon: " + ", ".join(missing))
 
     gpu_max = read_int(gpu / "fan1_max")
+    gpu_use = read_int(gpu / "device" / "gpu_busy_percent")
+    if gpu_use < 0:
+        gpu_use = 0
+    if gpu_use > 100:
+        gpu_use = 100
     return (
         temp_c(gpu, 1),
         temp_c(cpu, 1),
@@ -74,6 +105,8 @@ def sample():
         fan_percent(read_int(gpu / "fan1_input"), gpu_max),
         fan_percent(read_int(board / "fan1_input"), CPU_FAN_MAX),
         fan_percent(read_int(board / "fan2_input"), SYS_FAN_MAX),
+        gpu_use,
+        cpu_util(),
     )
 
 

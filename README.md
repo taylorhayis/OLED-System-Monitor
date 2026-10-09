@@ -1,10 +1,12 @@
 # OLED System Monitor
 
-A portrait system monitor on a 2.42" OLED, driven by an Arduino Nano. Temperatures sit on the top half. Fans sit on the bottom, and the blade with the dot spins faster as the percent goes up. At 0% it stays put.
+A portrait system monitor on a 2.42" OLED, driven by an Arduino Nano. Temperatures sit on top. Three short fan bars sit under that. GPU and CPU load sit on the bottom.
 
-`host/oled-monitor.py` runs on the Linux machine and feeds live GPU, CPU, and system temperatures, plus fan speed, over the serial port. The sketch draws whatever arrives. If the host goes quiet for 5 seconds, the glass blanks instead of freezing the last numbers.
+`host/oled-monitor.py` runs on the Linux machine and feeds those readings over the serial port. The sketch draws whatever arrives. If the host goes quiet for 5 seconds, the glass blanks instead of freezing the last numbers.
 
-![Portrait OLED showing GPU, CPU, and SYS temps above three fan readouts](images/oled-monitor.jpg)
+![Earlier layout, with a spinning blade for each fan under the temperatures](images/oled-monitor.jpg)
+
+That photo is the earlier screen. The sketch for it is `nano-oled/saved/temps-fans.cpp`. Copy it over `nano-oled/src/main.cpp` to build it again. It expects six numbers, so drop `gpuUse` and `cpuUse` from the host before you flash it.
 
 ## Parts
 
@@ -58,10 +60,10 @@ uv run host/oled-monitor.py
 Once a second it writes one line at 115200 baud:
 
 ```text
-gpuC,cpuC,sysC,gpuFan,cpuFan,sysFan
+gpuC,cpuC,sysC,gpuFan,cpuFan,sysFan,gpuUse,cpuUse
 ```
 
-Temperatures are whole degrees. Fan numbers are percents. On this machine those come from:
+Temperatures are whole degrees. Fan numbers and the two load numbers are percents. On this machine those come from:
 
 | Reading | Source |
 | --- | --- |
@@ -71,8 +73,10 @@ Temperatures are whole degrees. Fan numbers are percents. On this machine those 
 | GPU fan | `amdgpu` fan RPM against the max the card publishes |
 | CPU fan | `it8688` fan1, 2500 RPM = 100% |
 | SYS fan | `it8688` fan2, 2500 RPM = 100% |
+| GPU load | `amdgpu` `gpu_busy_percent` |
+| CPU load | `/proc/stat`, busy time since the last sample |
 
-A fan that beats its max reads 101%, 102%, and so on, so the number tells you to raise the cap. The blades still top out at full speed, or a bigger jump looks like they are turning backwards. The caps and the hwmon names sit at the top of the script.
+A fan that beats its max is still over 100 in that line, so you can see the cap is low. Load stays in 0 to 100. The caps and the hwmon names sit at the top of the script.
 
 The port is `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`, the CH340 with no serial number. Your user needs to be in the `dialout` group. Log out and back in after adding it.
 
@@ -97,4 +101,4 @@ systemctl --user enable --now oled-monitor
 
 ## What's on the screen
 
-GPU, CPU, and SYS temperatures are degrees. The three fans are percents. A stopped fan is `0`. Anything from a crawl up to full speed is driven off that percent. Past 100% the digits keep climbing and the blades stay at full speed. With no line for 5 seconds the panel clears, which is what you see after shutdown.
+GPU, CPU, and SYS temperatures are degrees. Under FAN, three bars labeled G, C, and S are the GPU, CPU, and system fan. An empty bar is stopped. A full bar is 100%. One pixel past the end of the track means that fan is over its cap. GPU and CPU load are percents along the bottom. A small block walks the dotted line after FAN. With no line for 5 seconds the panel clears, which is what you see after shutdown.

@@ -1,7 +1,9 @@
+// Previous screen: temps on top, a fan row for GPU, CPU, and SYS below.
+// Kept out of src/ so PlatformIO does not build it. Copy over src/main.cpp to restore.
 #include <Arduino.h>
 #include <U8g2lib.h>
 
-// Host line: "gpuC,cpuC,sysC,gpuFan,cpuFan,sysFan,gpuUse,cpuUse".
+// Filled by the host over serial: "gpuC,cpuC,sysC,gpuFan,cpuFan,sysFan".
 // Fan numbers are percents and may read past 100 when a fan beats its max.
 int gpuTemp = 0;
 int cpuTemp = 0;
@@ -11,13 +13,58 @@ int gpuFan = 0;
 int cpuFan = 0;
 int sysFan = 0;
 
-int gpuUse = 0;
-int cpuUse = 0;
-
 // Portrait: 64 wide, 128 tall. RES is Nano D8.
 U8G2_SSD1309_128X64_NONAME0_F_HW_I2C display(U8G2_R1, /* reset=*/ 8);
 
 static const char *kNames[] = {"GPU", "CPU", "SYS"};
+
+// 12 steps of 30 degrees. Blades are shortened so they stay inside a square housing.
+static const int8_t kBladeX[12] = {5, 4, 3, 0, -3, -4, -5, -4, -3, 0, 3, 4};
+static const int8_t kBladeY[12] = {0, 3, 4, 5, 4, 3, 0, -3, -4, -5, -4, -3};
+
+static uint8_t fanPhase[3];
+static uint32_t fanCarryMs[3];
+static uint32_t fanTickMs;
+
+// Three identical blades repeat every 4 steps, so a bigger jump looks
+// stopped or backwards. Two steps per redraw is as fast as the panel
+// can show while still turning the right way.
+static void tickFans() {
+  uint32_t now = millis();
+  uint32_t dt = now - fanTickMs;
+  fanTickMs = now;
+  if (dt > 500) {
+    dt = 500;
+  }
+
+  int values[] = {gpuFan, cpuFan, sysFan};
+  for (uint8_t i = 0; i < 3; i++) {
+    int percent = values[i];
+    if (percent <= 0) {
+      continue;
+    }
+    // The digits can show 101 and up. The blades still top out at full
+    // speed, or a bigger jump looks like the fan is turning backwards.
+    if (percent > 100) {
+      percent = 100;
+    }
+
+    uint8_t steps = 0;
+    if (percent >= 75) {
+      steps = 2;
+    } else if (percent >= 25) {
+      steps = 1;
+    } else {
+      uint32_t interval = 900 - (uint32_t)percent * 25;
+      fanCarryMs[i] += dt;
+      if (fanCarryMs[i] >= interval) {
+        steps = 1;
+        fanCarryMs[i] = 0;
+      }
+    }
+    fanPhase[i] = (fanPhase[i] + steps) % 12;
+  }
+}
 
 static void drawCorners(int x, int y, int w, int h) {
   const int len = 5;
@@ -40,17 +87,20 @@ static void drawTag(const char *text, int x, int baseline) {
   display.setDrawColor(1);
 }
 
-// Dots after a section label, with a small block walking along them.
-static void drawDottedRule(int x0, int x1, int y) {
-  for (int x = x0; x < x1; x += 2) {
-    display.drawPixel(x, y);
+static void drawFan(int x, int y, uint8_t step) {
+  display.drawFrame(x, y, 13, 13);
+  int cx = x + 6;
+  int cy = y + 6;
+  for (uint8_t blade = 0; blade < 3; blade++) {
+    uint8_t i = (step + blade * 4) % 12;
+    int tx = cx + kBladeX[i];
+    int ty = cy + kBladeY[i];
+    display.drawLine(cx, cy, tx, ty);
+    if (blade == 0) {
+      display.drawDisc(tx, ty, 1);
+    }
   }
-  int slots = (x1 - x0 - 2) / 2;
-  if (slots < 1) {
-    return;
-  }
-  int slot = (millis() / 60) % slots;
-  display.drawBox(x0 + slot * 2, y - 1, 3, 3);
+  display.drawBox(cx - 1, cy - 1, 3, 3);
 }
 
 static void drawTemps() {
@@ -75,75 +125,39 @@ static void drawTemps() {
   }
 }
 
-// Empty track is 0%. A full track is 100%. One pixel past the end means
-// the fan is over its cap, the same cue the old digits used for 101%.
-static void drawFanBar(int x, int y, int percent) {
-  const int w = 16;
-  const int h = 5;
-  display.drawFrame(x, y, w, h);
-  int fill = percent;
-  if (fill < 0) {
-    fill = 0;
-  }
-  bool over = fill > 100;
-  if (fill > 100) {
-    fill = 100;
-  }
-  int pixels = (fill * (w - 2) + 50) / 100;
-  if (pixels > 0) {
-    display.drawBox(x + 1, y + 1, pixels, h - 2);
-  }
-  if (over) {
-    display.drawVLine(x + w, y, h);
-  }
-}
-
 static void drawFans() {
   int values[] = {gpuFan, cpuFan, sysFan};
-  static const char *kMark[] = {"G", "C", "S"};
   display.setFont(u8g2_font_tom_thumb_4x6_tr);
-  display.drawStr(4, 67, "FAN");
-  drawDottedRule(18, 60, 65);
+  display.drawStr(4, 71, "FAN");
+  for (int x = 18; x < 60; x += 2) {
+    display.drawPixel(x, 69);
+  }
 
   for (uint8_t i = 0; i < 3; i++) {
-    int x = 2 + i * 21;
-    int lw = display.getStrWidth(kMark[i]);
-    display.drawStr(x + (16 - lw) / 2, 75, kMark[i]);
-    drawFanBar(x, 77, values[i]);
-  }
-}
+    int top = 76 + i * 17;
+    drawFan(1, top, fanPhase[i]);
 
-static void drawLoad() {
-  static const char *kLoadNames[] = {"GPU", "CPU"};
-  int values[] = {gpuUse, cpuUse};
-  for (uint8_t i = 0; i < 2; i++) {
-    int baseline = 102 + i * 18;
-    drawTag(kLoadNames[i], 1, baseline - 2);
+    display.setFont(u8g2_font_profont11_tr);
+    display.drawStr(16, top + 6, kNames[i]);
 
-    display.setFont(u8g2_font_logisoso16_tn);
-    char buf[4];
-    snprintf(buf, sizeof(buf), "%d", values[i]);
-    int nw = display.getStrWidth(buf);
-    display.setFont(u8g2_font_profont11_tr);
-    int pw = display.getStrWidth("%");
-    int x = 63 - (nw + 1 + pw);
-    display.setFont(u8g2_font_logisoso16_tn);
-    display.drawStr(x, baseline, buf);
-    display.setFont(u8g2_font_profont11_tr);
-    display.drawStr(x + nw + 1, baseline - 4, "%");
+    display.setFont(u8g2_font_profont12_tr);
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d%%", values[i]);
+    int w = display.getStrWidth(buf);
+    display.drawStr(64 - w, top + 11, buf);
   }
 }
 
 static const uint32_t kStaleMs = 5000;
-static char line[48];
+static char line[32];
 static uint8_t lineLen;
 static uint32_t lastFrameMs;
 static bool haveFrame;
 static bool panelLit;
 
 static bool parseFrame(const char *s) {
-  int values[8];
-  for (uint8_t i = 0; i < 8; i++) {
+  int values[6];
+  for (uint8_t i = 0; i < 6; i++) {
     if (*s == '\0') {
       return false;
     }
@@ -164,7 +178,7 @@ static bool parseFrame(const char *s) {
       s++;
     }
     values[i] = neg ? -value : value;
-    if (i < 7) {
+    if (i < 5) {
       if (*s != ',') {
         return false;
       }
@@ -180,8 +194,6 @@ static bool parseFrame(const char *s) {
   gpuFan = values[3];
   cpuFan = values[4];
   sysFan = values[5];
-  gpuUse = values[6];
-  cpuUse = values[7];
   lastFrameMs = millis();
   haveFrame = true;
   return true;
@@ -229,10 +241,14 @@ void loop() {
     return;
   }
   panelLit = true;
+  tickFans();
   display.clearBuffer();
   drawCorners(0, 0, 64, 128);
   drawTemps();
   drawFans();
-  drawLoad();
+
+  // Sweep a short mark along the split so the panel doesn't sit still.
+  uint8_t scan = (millis() / 30) % 64;
+  display.drawBox(scan, 63, 4, 1);
   display.sendBuffer();
 }
