@@ -90,6 +90,29 @@ On a lot of desktops, `brltty` grabs a CH340 a few seconds after you plug it in 
 sudo systemctl disable --now brltty
 ```
 
+## Sleep
+
+The CH340 on this Nano asks Linux for permission to wake the machine, then glitches when USB suspends. The PC comes straight back. `oled-monitor.py` does not block sleep. Nothing in the sketch can clear that flag. It lives in the USB chip.
+
+Install the udev rule once. It survives replug and reboot.
+
+```bash
+sudo cp host/99-ch340-no-wakeup.rules /etc/udev/rules.d/
+sudo udevadm control --reload
+sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=1a86
+```
+
+`1a86:7523` should now say `disabled`:
+
+```bash
+for d in /sys/bus/usb/devices/*; do
+  [ "$(cat "$d/idVendor" 2>/dev/null)" = "1a86" ] || continue
+  echo "$d  $(cat "$d/idProduct")  $(cat "$d/power/wakeup" 2>/dev/null)"
+done
+```
+
+Suspend after that. No Nano reflash for this one.
+
 `host/oled-monitor.service` starts the script at login. `ExecStart` points at this checkout. Change that path if you cloned the repo somewhere else, then:
 
 ```bash

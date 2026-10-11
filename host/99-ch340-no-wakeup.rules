@@ -1,0 +1,4 @@
+# The CH340 advertises USB remote wakeup, then signals resume as soon
+# as the bus suspends. That brings the PC straight back out of sleep.
+# Leave wakeup disabled for this device. The Nano sketch cannot do it.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="7523", TEST=="power/wakeup", ATTR{power/wakeup}="disabled"
